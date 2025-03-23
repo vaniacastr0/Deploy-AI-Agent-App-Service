@@ -1,6 +1,6 @@
 ## **Deploy Your First Azure AI Agent Service on Azure App Service**
 
-### **1. Introduction**
+## **1. Introduction**
 Azure AI Agent Service is a fully managed service designed to empower developers to securely build, deploy, and scale high-quality, extensible AI agents without needing to manage the underlying compute and storage resources[1](https://learn.microsoft.com/en-us/azure/ai-services/agents/overview). These AI agents act as "smart" microservices that can answer questions, perform actions, or automate workflows by combining generative AI models with tools that allow them to interact with real-world data sources[1](https://learn.microsoft.com/en-us/azure/ai-services/agents/overview).
 
 Deploying Azure AI Agent Service on Azure App Service offers several benefits:
@@ -10,7 +10,7 @@ Deploying Azure AI Agent Service on Azure App Service offers several benefits:
 
 ---
 
-### **2. Prerequisites**
+## **2. Prerequisites**
 Before you begin deploying Azure AI Agent Service on Azure App Service, ensure you have the following prerequisites in place:
 
 1. **Azure Subscription**: You need an active Azure subscription. If you don't have one, you can create a free account on the Azure portal[2](https://learn.microsoft.com/en-us/azure/ai-services/agents/quickstart).
@@ -26,7 +26,7 @@ Before you begin deploying Azure AI Agent Service on Azure App Service, ensure y
 
 ---
 
-### **3. Setting Up Azure AI Agent Service**
+## **3. Setting Up Azure AI Agent Service**
 
 To harness the capabilities of Azure AI Agent Service, follow these steps to set up the environment:
 
@@ -59,14 +59,12 @@ Detailed guidance is available in the [Quickstart documentation](https://learn.m
 
 ---
 
-### **4. Developing the AI Agent**
+## **4. Create and Configure the AI Agent**
 
-After setting up the environment and deploying the model, proceed to develop the AI agent:
+After setting up the environment and deploying the model, proceed to create the AI agent:
 
-**a. Define Your AI Agent**
-
-On the left-hand side of the project panel, select "Agents".
-Click "New agent" and the default agent will be created which already connected to your Azure OpenAI model.
+- On the left-hand side of the project panel, select "Agents".
+- Click "New agent" and the default agent will be created which already connected to your Azure OpenAI model.
 
 1. **Define Instructions:**
    - Craft clear and concise instructions that guide the agent's interactions. For example:
@@ -78,228 +76,164 @@ Click "New agent" and the default agent will be created which already connected 
    - Incorporate tools to enhance the agent's capabilities, such as:
      - **Code Interpreter:** Allows the agent to execute code for data analysis.
      - **OpenAPI Tools:** Enable the agent to interact with external APIs.
-   - Enabling Code Interpreter tool:
-     - Still on the agent settings, in the "Actions" section, click "Add"
-     ```python
-     from azure.ai.projects import AIProjectClient, CodeInterpreterToolDefinition
+   - Enable Code Interpreter tool:
+     - Still on the agent settings, in the "Actions" section, click "Add" and select "Code interpreter" and click "Save".
+	 - On the same agent settings panel at the top, click "Try in playground".
+	 - Do some quick test by entering "Hi" to the agent.
 
-     project_client = AIProjectClient.from_connection_string(conn_str="Your_Connection_String")
+---
 
-     code_interpreter = CodeInterpreterToolDefinition()
-     tools = [code_interpreter]
-     ```
+## **5. Develop a Chat Application**
 
-**b. Create and Configure the Agent**
+Utilize the Azure AI Foundry SDK to instantiate and integrate up the agent.
+In this tutorial we will be using **chainlit** - an open-source Python package to quickly build  Conversational AI application.
 
-Utilize the Azure AI Foundry SDK to instantiate and set up the agent:
+1. **Setup your local development environment:**
+	- Follow the steps below from cloning the repository to running the chainlit application.
+	- You can find the "Project connection string" inside your project "Overview" section in AI Foundry.
+	- Still in AI Foundry, "Agent ID" can be found inside your "Agents" section.
+		 ```bash
+		1. git clone -b Deploy-AI-Agent-App-Service https://github.com/robrita/tech-blogs
+		2. copy sample.env to .env and update
+		3. python -m venv venv
+		4. .\venv\Scripts\activate
+		5. python -m pip install -r requirements.txt
+		6. chainlit run app.py
+		 ```
 
-1. **Initialize the Agent:**
+2. **Full code for reference:**
    ```python
-   agent = project_client.agents.create_agent(
-       model="gpt-4o-mini",
-       name="my-agent",
-       instructions=instructions,
-       tools=tools,
-   )
-   ```
-
+	import os
+	import chainlit as cl
+	import logging
+	from dotenv import load_dotenv
+	from azure.ai.projects import AIProjectClient
+	from azure.identity import DefaultAzureCredential
+	from azure.ai.projects.models import (
+		MessageRole,
+	)
+
+	# Load environment variables
+	load_dotenv()
+
+	# Disable verbose connection logs
+	logger = logging.getLogger("azure.core.pipeline.policies.http_logging_policy")
+	logger.setLevel(logging.WARNING)
+
+	AIPROJECT_CONNECTION_STRING = os.getenv("AIPROJECT_CONNECTION_STRING")
+	AGENT_ID = os.getenv("AGENT_ID")
+
+	# Create an instance of the AIProjectClient using DefaultAzureCredential
+	project_client = AIProjectClient.from_connection_string(
+		conn_str=AIPROJECT_CONNECTION_STRING, credential=DefaultAzureCredential()
+	)
+
+	# Chainlit setup
+	@cl.on_chat_start
+	async def on_chat_start():
+		# Create a thread for the agent
+		if not cl.user_session.get("thread_id"):
+			thread = project_client.agents.create_thread()
+
+			cl.user_session.set("thread_id", thread.id)
+			print(f"New Thread ID: {thread.id}")
+
+	@cl.on_message
+	async def on_message(message: cl.Message):
+		thread_id = cl.user_session.get("thread_id")
+
+		try:
+			# Show thinking message to user
+			msg = await cl.Message("thinking...", author="agent").send()
+
+			project_client.agents.create_message(
+				thread_id=thread_id,
+				role="user",
+				content=message.content,
+			)
+
+			# Run the agent to process tne message in the thread
+			run = project_client.agents.create_and_process_run(thread_id=thread_id, agent_id=AGENT_ID)
+			print(f"Run finished with status: {run.status}")
+
+			# Check if you got "Rate limit is exceeded.", then you want to increase the token limit
+			if run.status == "failed":
+				raise Exception(run.last_error)
+
+			# Get all messages from the thread
+			messages = project_client.agents.list_messages(thread_id)
+
+			# Get the last message from the agent
+			last_msg = messages.get_last_text_message_by_role(MessageRole.AGENT)
+			if not last_msg:
+				raise Exception("No response from the model.")
+
+			msg.content = last_msg.text.value
+			await msg.update()
+
+		except Exception as e:
+			await cl.Message(content=f"Error: {str(e)}").send()
+
+	if __name__ == "__main__":
+		# Chainlit will automatically run the application
+		pass
+	```
+
+3. **Test Agent Functionality:**
+Ensure the agent operates as intended.
+
+---
+
+## **6. Deploying on Azure App Service**
+Deploying a Chainlit application on Azure App Service involves creating an App Service instance, configuring your application for deployment, and ensuring it runs correctly in the Azure environment. Here's a step-by-step guide:
+
+1. **Create an Azure App Service Instance:**
+	- **Log in to the Azure Portal**: Access the [Azure Portal](https://portal.azure.com/) and sign in with your Azure account.
+
+	- **Create a New Web App**:
+	  - Navigate to "App Services" and select "Create".
+	  - Fill in the necessary details:
+		- **Subscription**: Choose your Azure subscription.
+		- **Resource Group**: Select an existing resource group or create a new one.
+		- **Name**: Enter a unique name for your web app.
+		- **Publish**: Choose "Code".
+		- **Runtime Stack**: Select "Python 3.12" or higher.
+		- **Region**: Choose the region closest to your users.
+
+	- **Review and Create**: After filling in the details, click "Review + Create" and then "Create" to provision the App Service.
+
+2. **Update Azure App Service Settings:**
+	- **Environment Variables**: Add both "AIPROJECT_CONNECTION_STRING" and "AGENT_ID"
 
-2. **Set Up Threads and Messages:**
-   - Create a thread to manage conversations:
-     ```python
-     thread = project_client.agents.create_thread()
-     ```
-   - Add messages to the thread:
-     ```python
-     message = project_client.agents.create_message(
-         thread_id=thread.id,
-         role="user",
-         content="Hello, how can you assist me today?",
-     )
-     ```
+	- **Configuration**:
+		- Set Startup Command to "startup.sh"
+		- Turn "On" the "SCM Basic Auth Publishing Credentials" setting.
+		- Tutn "On" the "Session affinity" setting.
+		- Finally, click "Save".
 
-**c. Test Agent Functionality**
+	- **Identity**: Turn the status "On" under "System assigned" tab and click "Save".
 
-Ensure the agent operates as intended:
+3. **Assigned Role to your AI Foundry Project:**
+	- In the Azure Portal, navigate to "AI Foundry" and select your Azure AI Project where the Agent was created.
 
-1. **Run the Agent:**
-   ```python
-   run = project_client.agents.create_and_process_run(thread_id=thread.id, agent_id=agent.id)
-   ```
-
+	- Select "Access Control(IAM)" and click "Add" to add role assignment.
 
-2. **Review Responses:**
-   - Retrieve messages to assess the agent's replies:
-     ```python
-     messages = project_client.agents.list_messages(thread_id=thread.id)
-     for msg in messages:
-         print(f"{msg.role}: {msg.content}")
-     ```
+	- In the search bar, enter "AzureML Data Scientist" > "Next" > "Managed identity" > "Select members" > "App Service" > (Your app name) > "Review + Assign"
 
-For comprehensive instructions, refer to the [Azure AI Agent Service Overview](https://learn.microsoft.com/en-us/azure/ai-services/agents/overview).
+4. **Deploy Your Application to Azure App Service:**
+	- **Deployment Methods**: Azure App Service supports various deployment methods, including GitHub Actions, Azure DevOps, and direct ZIP uploads. Choose the method that best fits your workflow.
 
-By meticulously following these steps, you can effectively set up and develop an AI agent using Azure AI Agent Service, leveraging its robust features to create intelligent, responsive applications. 
+	- **Using External Public Github**:
+	  - In the Azure Portal, navigate to your App Service.
+	  - Go to the "Deployment Center" and select the "External Git" deployment option.
+	  - Enter "Repository" and "Branch".
+	  - Keep "Public" and hit "Save".
 
-Expanding upon our previous discussion, let's delve into the detailed steps for deploying an AI agent using Azure AI Agent Service on Azure App Service, enhancing security, monitoring, and concluding with key takeaways.
+	- **Check Your Deployment**:
+	  - Still under "Deployment Center", click "Logs" tab to view the deployment status.
+	  - Once success, head over to the "Overview" section of your App Service to test the "Default domain".
 
-**5. Deploying on Azure App Service**
+	- **Redeploy Your Application**:
+	  - To redeploy your app, under "Deployment Center", click "Sync".
 
-To deploy your AI agent on Azure App Service, follow these steps:
-
-**a. Prepare the Application**
-
-Develop a web application that interacts with your AI agent. Depending on your preferred programming language and framework, you might choose:
-
-- **Python with Flask:** A lightweight framework suitable for building web applications.
-
-- **Node.js with Express:** A minimal and flexible Node.js web application framework.
-
-**Example with Flask:**
-
-1. **Set Up the Environment:**
-
-   - Create a virtual environment and install Flask:
-
-     ```bash
-     python -m venv env
-     source env/bin/activate
-     pip install flask
-     ```
-
-2. **Develop the Application:**
-
-   - Create an `app.py` file with the following content:
-
-     ```python
-     from flask import Flask, request, jsonify
-     import openai
-
-     app = Flask(__name__)
-
-     # Initialize OpenAI API
-     openai.api_key = 'YOUR_OPENAI_API_KEY'
-
-     @app.route('/chat', methods=['POST'])
-     def chat():
-         user_input = request.json.get('message')
-         response = openai.Completion.create(
-             engine="davinci",
-             prompt=user_input,
-             max_tokens=150
-         )
-         return jsonify(response.choices[0].text.strip())
-
-     if __name__ == '__main__':
-         app.run(debug=True)
-     ```
-
-**b. Configure App Settings and Secrets**
-
-Securely manage sensitive information using Azure App Service's built-in features:
-
-1. **App Settings:**
-
-   - In the Azure Portal, navigate to your App Service.
-
-   - Under the "Settings" section, select "Configuration."
-
-   - Add a new application setting for your OpenAI API key:
-
-     - **Name:** `OPENAI_API_KEY`
-
-     - **Value:** `Your_OpenAI_API_Key`
-
-2. **Secure Storage with Azure Key Vault:**
-
-   - Store sensitive keys and secrets in Azure Key Vault.
-
-   - Integrate Key Vault with your App Service to access secrets securely.
-
-**c. Deploy to Azure App Service**
-
-Deploy your application using your preferred method:
-
-1. **Using GitHub Actions:**
-
-   - Set up a GitHub repository for your application.
-
-   - Configure a GitHub Actions workflow to deploy your app to Azure App Service.
-
-2. **Using Azure CLI:**
-
-   - Deploy directly from your local machine:
-
-     ```bash
-     az webapp up --name YOUR_APP_NAME --resource-group YOUR_RESOURCE_GROUP --runtime "PYTHON|3.8"
-     ```
-
-**6. Enhancing Security and Monitoring**
-
-Ensuring the security and reliability of your deployed AI agent is crucial. Implement the following measures:
-
-**a. Implement Authentication**
-
-Secure your application by enforcing authentication:
-
-1. **App Service Authentication:**
-
-   - Enable the "App Service Authentication" feature in the Azure Portal.
-
-   - Choose an identity provider (e.g., Azure Active Directory, Google, Facebook) to authenticate users.
-
-2. **Role-Based Access Control (RBAC):**
-
-   - Define roles and assign permissions to control access to specific application features.
-
-**b. Set Up Logging and Monitoring**
-
-Monitor your application's performance and detect anomalies:
-
-1. **Azure Monitor:**
-
-   - Collect and analyze metrics and logs to gain insights into your application's behavior.
-
-   - Set up alerts for specific conditions, such as high CPU usage or memory consumption.
-
-2. **Application Insights:**
-
-   - Instrument your application to collect telemetry data, including request rates, response times, and failure rates.
-
-   - Use the collected data to diagnose issues and improve application performance.
-
-**c. Network Security**
-
-Protect your application from unauthorized access:
-
-1. **Access Restrictions:**
-
-   - Configure IP restrictions to allow or deny traffic from specific IP addresses or ranges.
-
-2. **Virtual Network Integration:**
-
-   - Integrate your App Service with an Azure Virtual Network (VNet) to securely access resources.
-
-**d. Regular Backups**
-
-Ensure data integrity by scheduling regular backups:
-
-1. **App Service Backup:**
-
-   - Use the "Backup" feature to create backups of your application and its associated data.
-
-   - Store backups in a secure location and configure retention policies as per your organization's requirements.
-
-**7. Conclusion**
-
-Deploying an AI agent using Azure AI Agent Service on Azure App Service involves several key steps:
-
-- **Application Development:** Create a web application that interacts with your AI agent using frameworks like Flask or Express.
-
-- **Secure Configuration:** Manage sensitive information securely using App Settings and Azure Key Vault.
-
-- **Deployment:** Deploy your application using methods such as GitHub Actions or Azure CLI.
-
-- **Security and Monitoring:** Implement authentication, logging, monitoring, network security, and regular backups to maintain a secure and reliable application.
-
-By following these steps, you can effectively deploy and manage an AI agent, leveraging Azure's robust services to deliver intelligent and secure applications. 
-
+By following these steps, you can successfully deploy your Chainlit application on Azure App Service with first class Azure AI Agent Service integration, making it accessible to users globally.
